@@ -230,7 +230,7 @@ impl App {
                 if let Some(ws_idx) = workspace_action_target(&self.state, context) {
                     self.state.selected = ws_idx;
                     if self.state.confirm_close {
-                        super::modal::open_confirm_close(&mut self.state);
+                        super::modal::open_confirm_close(&mut self.state, None);
                     } else {
                         self.close_workspace_idx_via_api(ws_idx);
                         leave_navigate_mode(&mut self.state);
@@ -1575,7 +1575,7 @@ pub(super) fn execute_navigate_action_in_context(
             if let Some(ws_idx) = workspace_action_target(state, context) {
                 state.selected = ws_idx;
                 if state.confirm_close {
-                    super::modal::open_confirm_close(state);
+                    super::modal::open_confirm_close(state, None);
                 } else {
                     state.close_selected_workspace();
                     leave_navigate_mode(state);

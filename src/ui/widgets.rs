@@ -48,6 +48,39 @@ pub(crate) fn centered_popup_rect(area: Rect, popup_w: u16, popup_h: u16) -> Opt
     Some(Rect::new(popup_x, popup_y, popup_w, popup_h))
 }
 
+/// Clamps a box of size `(w, h)` anchored at `anchor` so it fits fully
+/// within `area`, keeping it as close to `anchor` as possible. Used to place
+/// menus/dialogs near a mouse click instead of centering them.
+pub(crate) fn clamp_rect_to_area(anchor: (u16, u16), w: u16, h: u16, area: Rect) -> Rect {
+    let w = w.min(area.width.max(1));
+    let h = h.min(area.height.max(1));
+    let x = anchor
+        .0
+        .max(area.x)
+        .min(area.x + area.width.saturating_sub(w));
+    let y = anchor
+        .1
+        .max(area.y)
+        .min(area.y + area.height.saturating_sub(h));
+    Rect::new(x, y, w, h)
+}
+
+/// Like [`centered_popup_rect`], but anchors the popup near `anchor` instead
+/// of centering it, clamped to stay fully within `area`.
+pub(crate) fn anchored_popup_rect(
+    area: Rect,
+    anchor: (u16, u16),
+    popup_w: u16,
+    popup_h: u16,
+) -> Option<Rect> {
+    let popup_w = popup_w.min(area.width.saturating_sub(4));
+    let popup_h = popup_h.min(area.height.saturating_sub(2));
+    if popup_w < 4 || popup_h < 4 {
+        return None;
+    }
+    Some(clamp_rect_to_area(anchor, popup_w, popup_h, area))
+}
+
 pub(super) fn render_modal_shell(
     frame: &mut Frame,
     area: Rect,

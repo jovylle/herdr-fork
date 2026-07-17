@@ -636,7 +636,8 @@ pub(crate) fn handle_resize_key(state: &mut AppState, raw_key: TerminalKey) {
     }
 }
 
-pub(super) fn open_confirm_close(state: &mut AppState) {
+pub(super) fn open_confirm_close(state: &mut AppState, anchor: Option<(u16, u16)>) {
+    state.confirm_close_anchor = anchor;
     state.mode = Mode::ConfirmClose;
 }
 
@@ -717,7 +718,7 @@ pub(super) fn apply_context_menu_action(
         ) => {
             state.selected = ws_idx;
             if state.confirm_close {
-                open_confirm_close(state);
+                open_confirm_close(state, Some((menu.x, menu.y)));
             } else {
                 state.close_selected_workspace();
                 state.mode = Mode::Navigate;
@@ -1133,7 +1134,7 @@ impl App {
             ) => {
                 self.state.selected = ws_idx;
                 if self.state.confirm_close {
-                    open_confirm_close(&mut self.state);
+                    open_confirm_close(&mut self.state, Some((menu.x, menu.y)));
                 } else {
                     self.close_workspace_idx_via_api(ws_idx);
                     self.state.mode = Mode::Navigate;

@@ -584,6 +584,7 @@ impl App {
             selection: None,
             selection_autoscroll: None,
             context_menu: None,
+            confirm_close_anchor: None,
             update_available,
             update_install_command,
             latest_release_notes_available,

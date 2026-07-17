@@ -1421,6 +1421,9 @@ pub struct AppState {
     pub selection: Option<Selection>,
     pub selection_autoscroll: Option<SelectionAutoscroll>,
     pub context_menu: Option<ContextMenuState>,
+    /// Screen position to anchor the confirm-close dialog near, when it was
+    /// opened from a context menu action. `None` keeps the dialog centered.
+    pub(crate) confirm_close_anchor: Option<(u16, u16)>,
     // Notifications
     pub update_available: Option<String>,
     pub update_install_command: String,
@@ -1801,6 +1804,7 @@ impl AppState {
             selection: None,
             selection_autoscroll: None,
             context_menu: None,
+            confirm_close_anchor: None,
             update_available: None,
             update_install_command: "herdr update".into(),
             latest_release_notes_available: false,

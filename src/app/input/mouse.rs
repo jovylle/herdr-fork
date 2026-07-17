@@ -1220,13 +1220,17 @@ impl AppState {
             .unwrap_or(0);
         let menu_w = (max_item_w + 4).max(14).min(screen.width.max(1));
         let menu_h = (menu.items().len() as u16 + 2).min(screen.height.max(1));
-        let x = menu.x.min(screen.x + screen.width.saturating_sub(menu_w));
-        let y = menu.y.min(screen.y + screen.height.saturating_sub(menu_h));
-        Some(Rect::new(x, y, menu_w, menu_h))
+        Some(crate::ui::clamp_rect_to_area(
+            (menu.x, menu.y),
+            menu_w,
+            menu_h,
+            screen,
+        ))
     }
 
     pub(crate) fn confirm_close_rect(&self) -> Rect {
-        crate::ui::confirm_close_popup_rect(self.view.terminal_area).unwrap_or_default()
+        crate::ui::confirm_close_popup_rect(self.view.terminal_area, self.confirm_close_anchor)
+            .unwrap_or_default()
     }
 
     fn context_menu_item_at(&self, col: u16, row: u16) -> Option<usize> {
@@ -2784,6 +2788,61 @@ mod tests {
 
         assert_eq!(app.state.workspaces.len(), 1);
         assert_eq!(app.state.workspaces[0].display_name(), "a");
+    }
+
+    #[test]
+    fn confirm_close_rect_anchors_near_context_menu_click_point() {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("a"), Workspace::test_new("b")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+
+        app.state.context_menu = Some(ContextMenuState {
+            kind: ContextMenuKind::Workspace { ws_idx: 1 },
+            x: 2,
+            y: 2,
+            list: MenuListState::new(1),
+        });
+        app.state.mode = Mode::ContextMenu;
+        handle_context_menu_key(
+            &mut app.state,
+            &mut app.terminal_runtimes,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
+        );
+        assert_eq!(app.state.mode, Mode::ConfirmClose);
+
+        let anchored = app.state.confirm_close_rect();
+        let centered =
+            crate::ui::confirm_close_popup_rect(app.state.view.terminal_area, None).unwrap();
+
+        // The dialog should follow the context menu's click point instead of
+        // jumping to the screen center.
+        assert_ne!(anchored, centered);
+        let screen = app.state.screen_rect();
+        assert!(anchored.x >= screen.x && anchored.x + anchored.width <= screen.x + screen.width);
+        assert!(
+            anchored.y >= screen.y && anchored.y + anchored.height <= screen.y + screen.height
+        );
+    }
+
+    #[test]
+    fn confirm_close_rect_stays_centered_without_context_menu_anchor() {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("a"), Workspace::test_new("b")];
+        app.state.active = Some(0);
+        app.state.selected = 1;
+        app.state.mode = Mode::Terminal;
+        app.state.confirm_close = true;
+
+        // Non-context-menu path (e.g. keyboard shortcut / CloseWorkspace action).
+        crate::app::input::modal::open_confirm_close(&mut app.state, None);
+        assert_eq!(app.state.mode, Mode::ConfirmClose);
+
+        let rect = app.state.confirm_close_rect();
+        let centered =
+            crate::ui::confirm_close_popup_rect(app.state.view.terminal_area, None).unwrap();
+        assert_eq!(rect, centered);
     }
 
     #[test]

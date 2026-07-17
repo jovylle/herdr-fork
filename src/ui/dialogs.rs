@@ -8,8 +8,9 @@ use ratatui::{
 
 use super::text::{display_width_u16, truncate_end};
 use super::widgets::{
-    action_button_row_rects, centered_popup_rect, panel_contrast_fg, render_action_button,
-    render_modal_header, render_modal_shell, render_panel_shell, ActionButtonSpec,
+    action_button_row_rects, anchored_popup_rect, centered_popup_rect, panel_contrast_fg,
+    render_action_button, render_modal_header, render_modal_shell, render_panel_shell,
+    ActionButtonSpec,
 };
 use crate::app::{state::WorktreeOpenState, AppState, Mode};
 
@@ -663,7 +664,7 @@ pub(super) fn render_confirm_close_overlay(app: &AppState, frame: &mut Frame, ar
 
     super::dim_background(frame, area);
 
-    let Some(popup) = confirm_close_popup_rect(area) else {
+    let Some(popup) = confirm_close_popup_rect(area, app.confirm_close_anchor) else {
         return;
     };
 
@@ -731,8 +732,11 @@ pub(super) fn render_confirm_close_overlay(app: &AppState, frame: &mut Frame, ar
     }
 }
 
-pub(crate) fn confirm_close_popup_rect(area: Rect) -> Option<Rect> {
-    centered_popup_rect(area, 64, 6)
+pub(crate) fn confirm_close_popup_rect(area: Rect, anchor: Option<(u16, u16)>) -> Option<Rect> {
+    match anchor {
+        Some(anchor) => anchored_popup_rect(area, anchor, 64, 6),
+        None => centered_popup_rect(area, 64, 6),
+    }
 }
 
 pub(crate) fn confirm_close_button_rects(inner: Rect) -> (Rect, Rect) {
@@ -762,7 +766,39 @@ mod tests {
     };
     use ratatui::{backend::TestBackend, layout::Rect, Terminal};
 
-    use super::{confirm_close_overlay_text, render_new_linked_worktree_overlay};
+    use super::{
+        confirm_close_overlay_text, confirm_close_popup_rect, render_new_linked_worktree_overlay,
+    };
+
+    #[test]
+    fn confirm_close_popup_rect_anchors_near_the_given_point_instead_of_centering() {
+        let area = Rect::new(26, 0, 80, 20);
+
+        let centered = confirm_close_popup_rect(area, None).unwrap();
+        let anchored = confirm_close_popup_rect(area, Some((30, 1))).unwrap();
+
+        assert_ne!(anchored, centered);
+        assert_eq!(anchored.width, centered.width);
+        assert_eq!(anchored.height, centered.height);
+        // Stays fully within the render area.
+        assert!(anchored.x >= area.x && anchored.x + anchored.width <= area.x + area.width);
+        assert!(anchored.y >= area.y && anchored.y + anchored.height <= area.y + area.height);
+    }
+
+    #[test]
+    fn confirm_close_popup_rect_clamps_anchor_that_would_overflow_the_area() {
+        let area = Rect::new(26, 0, 80, 20);
+
+        // Anchor left of the area (e.g. a sidebar click) clamps to the left edge.
+        let low = confirm_close_popup_rect(area, Some((0, 0))).unwrap();
+        assert_eq!(low.x, area.x);
+        assert_eq!(low.y, area.y);
+
+        // Anchor beyond the bottom-right corner clamps so the popup still fits.
+        let high = confirm_close_popup_rect(area, Some((200, 50))).unwrap();
+        assert_eq!(high.x + high.width, area.x + area.width);
+        assert_eq!(high.y + high.height, area.y + area.height);
+    }
 
     #[test]
     fn confirm_close_text_reports_parent_group_scope() {
