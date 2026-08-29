@@ -11,7 +11,7 @@ use ratatui::{
 use self::tokens::{ResolvedToken, ResolvedTokenKind, SpaceTokenContext};
 use super::scrollbar::{render_scrollbar, should_show_scrollbar};
 use super::status::{state_icon, state_label, state_label_color};
-use super::text::{display_width, display_width_u16, truncate_end};
+use super::text::{display_width, display_width_u16, softwrap, truncate_end};
 use crate::app::state::{AgentPanelSort, Palette};
 use crate::app::{AppState, Mode};
 use crate::detect::AgentState;
@@ -554,13 +554,189 @@ fn resolved_agent_rows(app: &AppState, entry: &AgentPanelEntry) -> Vec<Vec<Resol
 pub(crate) fn agent_entry_height_in_body(
     app: &AppState,
     entry: &AgentPanelEntry,
+    body_width: u16,
     body_height: u16,
 ) -> u16 {
-    (resolved_agent_rows(app, entry)
-        .len()
-        .max(1)
-        .min(u16::MAX as usize) as u16)
-        .min(body_height)
+    if !app.sidebar_agents.wrap {
+        return (resolved_agent_rows(app, entry)
+            .len()
+            .max(1)
+            .min(u16::MAX as usize) as u16)
+            .min(body_height);
+    }
+    let rows = resolved_agent_rows(app, entry);
+    let mut total: u16 = 0;
+    for (row_idx, resolved) in rows.iter().enumerate() {
+        if resolved.is_empty() {
+            total = total.saturating_add(1).min(body_height);
+            continue;
+        }
+        // width available after prefix: row 0 => " " (1), others => "   " (3)
+        let prefix = if row_idx == 0 { 1 } else { 3 };
+        let avail = (body_width as usize).saturating_sub(prefix).max(1);
+        // first line of first row uses 1, wrap continuations use 3
+        let lines = if row_idx == 0 {
+            wrapped_token_line_count(resolved, body_width, true)
+        } else {
+            token_row_wrapped_line_count(resolved, avail)
+        };
+        total = total.saturating_add(lines as u16).min(body_height);
+        if total >= body_height {
+            break;
+        }
+    }
+    total.max(1).min(body_height)
+}
+
+fn token_row_wrapped_line_count(resolved: &[ResolvedToken], max_width: usize) -> usize {
+    if max_width == 0 {
+        return 0;
+    }
+    let full_width = resolved_token_row_width(resolved);
+    if full_width <= max_width {
+        return 1;
+    }
+    // estimate via greedy token-boundary wrap
+    let mut lines = 1usize;
+    let mut cur_width = 0usize;
+    for (idx, tok) in resolved.iter().enumerate() {
+        let w = token_display_width(tok);
+        if w == 0 {
+            continue;
+        }
+        // hard-break tokens longer than max_width span multiple lines
+        if w > max_width {
+            let chunks = softwrap(&token_display_string(tok), max_width);
+            // if current line not empty, first chunk needs new line
+            if cur_width != 0 {
+                lines += 1;
+                cur_width = 0;
+            }
+            lines += chunks.len().saturating_sub(1);
+            // last chunk occupies cur_width
+            cur_width = chunks.last().map(|c| display_width(c)).unwrap_or(0);
+            continue;
+        }
+        let sep_w = if cur_width == 0 {
+            0
+        } else {
+            let prev = resolved[..idx].iter().rev().find(|t| token_display_width(t) > 0);
+            prev.map(|p| display_width(tokens::separator(p, tok)))
+                .unwrap_or(0)
+        };
+        if cur_width + sep_w + w <= max_width {
+            cur_width += sep_w + w;
+        } else {
+            lines += 1;
+            cur_width = w;
+        }
+    }
+    lines.max(1)
+}
+
+fn wrapped_token_line_count(resolved: &[ResolvedToken], body_width: u16, is_first_row: bool) -> usize {
+    if !is_first_row {
+        return 1;
+    }
+    // first logical row wraps with first line width = body-1, rest = body-3
+    let w1 = (body_width as usize).saturating_sub(1).max(1);
+    let w_rest = (body_width as usize).saturating_sub(3).max(1);
+    // if single row fits in w1, 1 line
+    let full = resolved_token_row_width(resolved);
+    if full <= w1 {
+        return 1;
+    }
+    let mut lines = 1usize;
+    let mut cur_width = 0usize;
+    let mut cur_max = w1;
+    for (idx, tok) in resolved.iter().enumerate() {
+        let raw = token_display_string(tok);
+        if raw.is_empty() {
+            continue;
+        }
+        let w = display_width(&raw);
+        if w > cur_max && w > w_rest {
+            // hard break
+            let chunks = softwrap(&raw, w_rest);
+            if cur_width != 0 {
+                lines += 1;
+                cur_width = 0;
+                cur_max = w_rest;
+            }
+            lines += chunks.len().saturating_sub(1);
+            cur_width = chunks.last().map(|c| display_width(c)).unwrap_or(0);
+            cur_max = w_rest;
+            continue;
+        }
+        // choose max for this line
+        let sep_w = if cur_width == 0 {
+            0
+        } else {
+            let prev = resolved[..idx].iter().rev().find(|t| !token_display_string(t).is_empty());
+            prev.map(|p| display_width(tokens::separator(p, tok)))
+                .unwrap_or(0)
+        };
+        if cur_width + sep_w + w <= cur_max {
+            cur_width += sep_w + w;
+        } else {
+            lines += 1;
+            cur_max = w_rest;
+            cur_width = w;
+        }
+    }
+    lines
+}
+
+fn token_display_string(tok: &ResolvedToken) -> String {
+    match &tok.kind {
+        ResolvedTokenKind::StateIcon => String::new(), // handled via icon, not width counted here for estimate
+        ResolvedTokenKind::StateText(s)
+        | ResolvedTokenKind::Workspace(s)
+        | ResolvedTokenKind::Tab(s)
+        | ResolvedTokenKind::Pane(s)
+        | ResolvedTokenKind::Agent(s)
+        | ResolvedTokenKind::TerminalTitle(s)
+        | ResolvedTokenKind::Branch(s)
+        | ResolvedTokenKind::Custom(s) => s.clone(),
+        ResolvedTokenKind::GitStatus { ahead, behind } => {
+            let mut out = String::new();
+            if *ahead > 0 {
+                out.push_str(&format!("↑{ahead}"));
+            }
+            if *ahead > 0 && *behind > 0 {
+                out.push(' ');
+            }
+            if *behind > 0 {
+                out.push_str(&format!("↓{behind}"));
+            }
+            out
+        }
+    }
+}
+
+fn token_display_width(tok: &ResolvedToken) -> usize {
+    match &tok.kind {
+        ResolvedTokenKind::StateIcon => 1, // icon width approx
+        _ => display_width(&token_display_string(tok)),
+    }
+}
+
+fn resolved_token_row_width(resolved: &[ResolvedToken]) -> usize {
+    let mut w = 0usize;
+    let mut first = true;
+    for (idx, tok) in resolved.iter().enumerate() {
+        let tw = token_display_width(tok);
+        if tw == 0 {
+            continue;
+        }
+        if !first {
+            let prev = resolved[..idx].iter().rev().find(|t| token_display_width(t) > 0).unwrap();
+            w += display_width(tokens::separator(prev, tok));
+        }
+        w += tw;
+        first = false;
+    }
+    w
 }
 
 pub(crate) fn agent_entry_gap(app: &AppState, entry_idx: usize, entry_count: usize) -> u16 {
@@ -581,7 +757,7 @@ fn agent_panel_visible_count_from(app: &AppState, area: Rect, scroll: usize) -> 
     let mut visible = 0usize;
     let entries = agent_panel_entries(app);
     for (index, entry) in entries.iter().enumerate().skip(scroll) {
-        let height = agent_entry_height_in_body(app, entry, body.height);
+        let height = agent_entry_height_in_body(app, entry, body.width, body.height);
         if used_rows.saturating_add(height) > body.height {
             break;
         }
@@ -601,7 +777,7 @@ fn agent_panel_bottom_start(app: &AppState, area: Rect) -> usize {
     let mut start = entries.len();
     for (index, entry) in entries.iter().enumerate().rev() {
         let gap = agent_entry_gap(app, index, entries.len());
-        let needed = agent_entry_height_in_body(app, entry, body.height).saturating_add(gap);
+        let needed = agent_entry_height_in_body(app, entry, body.width, body.height).saturating_add(gap);
         if used_rows.saturating_add(needed) > body.height {
             break;
         }
@@ -1206,6 +1382,132 @@ fn apply_token_style(mut style: Style, patch: crate::config::SidebarTokenStyle) 
     style
 }
 
+fn resolved_token_lines_wrapped(
+    resolved: &[ResolvedToken],
+    state_icon: (&str, Style),
+    state_text_style: Style,
+    workspace_style: Style,
+    secondary_style: Style,
+    custom_style: Style,
+    p: &Palette,
+    max_width_first: usize,
+    max_width_rest: usize,
+) -> Vec<Vec<Span<'static>>> {
+    if max_width_first == 0 && max_width_rest == 0 {
+        return vec![Vec::new()];
+    }
+    // If not wrapping, caller should use resolved_token_spans directly.
+    // This helper is for wrap mode: greedy token-boundary wrap with
+    // softwrap for tokens longer than the available width.
+    let mut token_units: Vec<(String, Style, bool)> = Vec::new(); // (text, style, is_state_icon)
+    for tok in resolved {
+        match &tok.kind {
+            ResolvedTokenKind::StateIcon => {
+                token_units.push((state_icon.0.to_string(), apply_token_style(state_icon.1, tok.style), true));
+            }
+            ResolvedTokenKind::StateText(t) => {
+                token_units.push((t.clone(), apply_token_style(state_text_style, tok.style), false));
+            }
+            ResolvedTokenKind::Workspace(t) => {
+                token_units.push((t.clone(), apply_token_style(workspace_style, tok.style), false));
+            }
+            ResolvedTokenKind::Tab(t) | ResolvedTokenKind::Pane(t) | ResolvedTokenKind::Agent(t) | ResolvedTokenKind::Branch(t) => {
+                token_units.push((t.clone(), apply_token_style(secondary_style, tok.style), false));
+            }
+            ResolvedTokenKind::GitStatus { ahead, behind } => {
+                if *ahead > 0 {
+                    token_units.push((format!("↑{ahead}"), apply_token_style(Style::default().fg(p.green), tok.style), false));
+                }
+                if *ahead > 0 && *behind > 0 {
+                    // separator handled as inter-token sep, not as token itself
+                }
+                if *behind > 0 {
+                    token_units.push((format!("↓{behind}"), apply_token_style(Style::default().fg(p.red), tok.style), false));
+                }
+            }
+            ResolvedTokenKind::TerminalTitle(t) | ResolvedTokenKind::Custom(t) => {
+                token_units.push((t.clone(), apply_token_style(custom_style, tok.style), false));
+            }
+        }
+    }
+    if token_units.is_empty() {
+        return vec![Vec::new()];
+    }
+    // Pre-expand long token units into softwrapped chunks
+    let mut expanded: Vec<(String, Style)> = Vec::new();
+    let max_for_split = max_width_first.max(max_width_rest).max(1);
+    for (text, style, _is_icon) in token_units {
+        if text.is_empty() {
+            continue;
+        }
+        if display_width(&text) <= max_for_split {
+            expanded.push((text, style));
+        } else {
+            // use softwrap with the narrower width for chunks (so they fit on rest lines)
+            let w = max_width_rest.max(1);
+            let chunks = softwrap(&text, w);
+            for chunk in chunks {
+                if !chunk.is_empty() {
+                    expanded.push((chunk, style));
+                }
+            }
+        }
+    }
+    if expanded.is_empty() {
+        return vec![Vec::new()];
+    }
+    // Greedy pack into lines
+    let mut lines: Vec<Vec<Span<'static>>> = vec![Vec::new()];
+    let mut cur_width = 0usize;
+    let mut line_idx = 0usize;
+    let sep_style = Style::default().fg(p.overlay0).add_modifier(Modifier::DIM);
+    for (idx, (text, style)) in expanded.into_iter().enumerate() {
+        let w = display_width(&text);
+        if w == 0 {
+            continue;
+        }
+        let cur_max = if line_idx == 0 { max_width_first } else { max_width_rest };
+        // Determine if this expanded chunk originated from same original token split:
+        // We treat softwrap chunks as if they already contain word boundaries, so
+        // they should not share a line with a following token if they were hard-split.
+        // Our expanded list already has chunks; we just pack greedily.
+        let sep = if cur_width == 0 {
+            ""
+        } else {
+            // separator before this token except after hard-split chunk that filled line
+            // use " · " except after StateIcon which uses " "
+            let prev_is_icon = idx > 0 && lines.last().map(|l| l.iter().any(|s: &Span| s.content == state_icon.0)).unwrap_or(false);
+            if prev_is_icon { " " } else { " · " }
+        };
+        let sep_w = display_width(sep);
+        if cur_width + sep_w + w <= cur_max {
+            if !sep.is_empty() {
+                lines[line_idx].push(Span::styled(sep.to_string(), sep_style));
+                cur_width += sep_w;
+            }
+            lines[line_idx].push(Span::styled(text, style));
+            cur_width += w;
+        } else {
+            // need new line
+            line_idx += 1;
+            if lines.len() <= line_idx {
+                lines.push(Vec::new());
+            }
+            cur_width = 0;
+            lines[line_idx].push(Span::styled(text, style));
+            cur_width = w;
+        }
+    }
+    // Remove empty trailing lines
+    while lines.len() > 1 && lines.last().map(|l| l.is_empty()).unwrap_or(false) {
+        lines.pop();
+    }
+    if lines.is_empty() {
+        lines.push(Vec::new());
+    }
+    lines
+}
+
 fn render_workspace_list(
     app: &AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
@@ -1495,7 +1797,12 @@ fn render_agent_detail(
     for (index, detail) in details.iter().enumerate().skip(scroll) {
         let label_color = state_label_color(detail.state, detail.seen, p);
         let rows = resolved_agent_rows(app, detail);
-        let height = (rows.len().max(1) as u16).min(body.height);
+        let wrap = app.sidebar_agents.wrap;
+        let height = if wrap {
+            agent_entry_height_in_body(app, detail, body.width, body.height)
+        } else {
+            (rows.len().max(1) as u16).min(body.height)
+        };
         if row_y.saturating_add(height) > body_bottom {
             break;
         }
@@ -1519,23 +1826,62 @@ fn render_agent_detail(
         let agent_style = Style::default().fg(p.overlay0).add_modifier(Modifier::DIM);
         let state_icon = state_icon(detail.state, detail.seen, app.status_indicators, p);
 
-        for (row_index, resolved) in rows.iter().take(height as usize).enumerate() {
-            let mut spans = vec![Span::raw(if row_index == 0 { " " } else { "   " })];
-            spans.extend(resolved_token_spans(
-                resolved,
-                state_icon,
-                status_style,
-                name_style,
-                agent_style,
-                agent_style,
-                p,
-                body.width
-                    .saturating_sub(if row_index == 0 { 1 } else { 3 }) as usize,
-            ));
-            frame.render_widget(
-                Paragraph::new(Line::from(spans)).style(row_style),
-                Rect::new(body.x, row_y + row_index as u16, body.width, 1),
-            );
+        if wrap {
+            let mut physical_y = row_y;
+            for (row_index, resolved) in rows.iter().enumerate() {
+                let max_first = body.width.saturating_sub(if row_index == 0 { 1 } else { 3 }) as usize;
+                let max_rest = body.width.saturating_sub(3) as usize;
+                let lines = resolved_token_lines_wrapped(
+                    resolved,
+                    state_icon,
+                    status_style,
+                    name_style,
+                    agent_style,
+                    agent_style,
+                    p,
+                    max_first,
+                    max_rest,
+                );
+                for (line_idx, line_spans) in lines.into_iter().enumerate() {
+                    if physical_y >= body_bottom {
+                        break;
+                    }
+                    let prefix = if row_index == 0 && line_idx == 0 {
+                        " "
+                    } else {
+                        "   "
+                    };
+                    let mut spans = vec![Span::raw(prefix)];
+                    spans.extend(line_spans);
+                    frame.render_widget(
+                        Paragraph::new(Line::from(spans)).style(row_style),
+                        Rect::new(body.x, physical_y, body.width, 1),
+                    );
+                    physical_y += 1;
+                }
+                if physical_y >= body_bottom {
+                    break;
+                }
+            }
+        } else {
+            for (row_index, resolved) in rows.iter().take(height as usize).enumerate() {
+                let mut spans = vec![Span::raw(if row_index == 0 { " " } else { "   " })];
+                spans.extend(resolved_token_spans(
+                    resolved,
+                    state_icon,
+                    status_style,
+                    name_style,
+                    agent_style,
+                    agent_style,
+                    p,
+                    body.width
+                        .saturating_sub(if row_index == 0 { 1 } else { 3 }) as usize,
+                ));
+                frame.render_widget(
+                    Paragraph::new(Line::from(spans)).style(row_style),
+                    Rect::new(body.x, row_y + row_index as u16, body.width, 1),
+                );
+            }
         }
         row_y = row_y
             .saturating_add(height)
@@ -2154,7 +2500,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         assert_eq!(metrics.max_offset_from_bottom, 0);
         let entry = agent_panel_entries(&app).pop().unwrap();
         assert_eq!(
-            agent_entry_height_in_body(&app, &entry, agent_panel_body_rect(panel, false).height),
+            agent_entry_height_in_body(&app, &entry, agent_panel_body_rect(panel, false).width, agent_panel_body_rect(panel, false).height),
             agent_panel_body_rect(panel, false).height
         );
     }

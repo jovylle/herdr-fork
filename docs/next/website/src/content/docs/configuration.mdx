@@ -387,6 +387,22 @@ Space rows accept these built-in tokens:
 
 Tokens render in their configured order. Herdr normally separates adjacent values with ` · ` and uses a single space after `state_icon`. Missing values and their separators disappear; a row disappears when none of its tokens have a value. Each layout may contain at most 16 rows, with at most 16 tokens in each row.
 
+Overflow is truncated with `…` by default. To softwrap long rows instead, enable wrap:
+
+```toml
+[ui.sidebar.agents]
+wrap = true
+rows = [
+  ["state_icon", "workspace", "tab"],
+  ["agent", "$summary"],
+]
+
+[ui.sidebar.spaces]
+wrap = true
+```
+
+When `wrap = true`, a configured row that would overflow wraps onto continued lines indented with `   ` instead of truncating. The entry grows taller and scroll calculations include the extra lines. Wrapping applies only to the expanded desktop sidebar; collapsed and mobile views keep their compact layouts.
+
 A token entry can also be an inline style table:
 
 ```toml

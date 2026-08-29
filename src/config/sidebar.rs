@@ -377,6 +377,8 @@ pub struct AgentsSidebarConfig {
     #[serde(default, deserialize_with = "deserialize_rows_by_agent")]
     pub rows_by_agent: BTreeMap<String, AgentSidebarRows>,
     pub row_gap: u16,
+    #[serde(default)]
+    pub wrap: bool,
 }
 
 impl AgentsSidebarConfig {
@@ -400,6 +402,7 @@ impl Default for AgentsSidebarConfig {
             ],
             rows_by_agent: BTreeMap::new(),
             row_gap: DEFAULT_SIDEBAR_ROW_GAP,
+            wrap: false,
         }
     }
 }
@@ -410,6 +413,8 @@ pub struct SpacesSidebarConfig {
     #[serde(deserialize_with = "deserialize_sidebar_rows")]
     pub rows: SpaceSidebarRows,
     pub row_gap: u16,
+    #[serde(default)]
+    pub wrap: bool,
 }
 
 impl Default for SpacesSidebarConfig {
@@ -420,6 +425,7 @@ impl Default for SpacesSidebarConfig {
                 vec![SpaceSidebarToken::Branch, SpaceSidebarToken::GitStatus],
             ],
             row_gap: DEFAULT_SIDEBAR_ROW_GAP,
+            wrap: false,
         }
     }
 }
